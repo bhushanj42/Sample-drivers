@@ -1,0 +1,30 @@
+#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+#include <QDebug>
+#include "guibackend.h"
+#include <QQmlContext>
+
+int main(int argc, char *argv[])
+{
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+#endif
+
+    QGuiApplication app(argc, argv);
+
+    QQmlApplicationEngine engine;
+
+    GUIBackend *g = new GUIBackend();
+    engine.rootContext()->setContextProperty("guibackObj",dynamic_cast<QObject*>(g));
+
+    const QUrl url(QStringLiteral("qrc:/main.qml"));
+
+    QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
+                     &app, [url](QObject *obj, const QUrl &objUrl) {
+        if (!obj && url == objUrl)
+            QCoreApplication::exit(-1);
+    }, Qt::QueuedConnection);
+    engine.load(url);
+
+    return app.exec();
+}
