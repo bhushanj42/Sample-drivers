@@ -10,6 +10,15 @@
 
 static ssize_t myspi_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos);
 static ssize_t myspi_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos);
+static int myspi_open(struct inode *inode, struct file *filp);
+
+struct mystruct {
+	struct cdev spi_cdev;
+	struct spi_device *spiDevInStruct;
+	u8 *tx_buff;
+	u8 *rx_buff;
+};
+static unsigned bufferSize = 8;	/* Bytes */
 
 /*---------------------------- SPI driver related ----------------------------*/
 #define ID_FOR_FOO_DEVICE  0
@@ -32,14 +41,13 @@ MODULE_DEVICE_TABLE(of, foobar_of_match);
 #define CHAR_CLASS		"mispi-class" 
 dev_t dev_num;
 struct class *spi_class;
-struct cdev spi_cdev;
 static struct file_operations spiregmap_fops =
 {
 	.owner = THIS_MODULE,
 	.write = myspi_write,
 	.read = myspi_read,
+	.open = myspi_open
 };
-static char temp;
 /*------------------------- Character driver related -------------------------*/
 
 /*------------------------------ Regmap related ------------------------------*/
@@ -73,9 +81,36 @@ static int spi_probe(struct spi_device *spi)
 	struct device *dev = &spi->dev;
 	struct regmap_config spi_regmap_config;
 	dev_t curr_dev;
+	struct mystruct *mystr = NULL;
 	
 	dev_err(dev, "Hello! SPI device probed started");
 	
+	mystr = devm_kzalloc(dev, sizeof(struct mystruct), GFP_KERNEL);
+	if (!mystr) 
+	{
+		dev_err(dev, "Problem in setting memory for mystruct");
+        	return -ENOMEM; 
+	}
+	
+	mystr->spiDevInStruct = spi;
+	
+	if (!mystr->tx_buff)
+    	{
+		mystr->tx_buff = devm_kzalloc(dev, bufferSize, GFP_KERNEL);
+		if (!mystr->tx_buff) {
+			dev_err(dev, "open/ENOMEM\n");
+			return -ENOMEM;
+		}
+	}
+	
+	if (!mystr->rx_buff)
+    	{
+		mystr->rx_buff = devm_kzalloc(dev, bufferSize, GFP_KERNEL);
+		if (!mystr->rx_buff) {
+			dev_err(dev, "open/ENOMEM\n");
+			return -ENOMEM;
+		}
+	}
 /*---------------------------- SPI driver related ----------------------------*/
 	spi->mode = SPI_MODE_0;
 	spi->max_speed_hz = 125000;	/* 125 KHz */
@@ -121,18 +156,18 @@ static int spi_probe(struct spi_device *spi)
 	}
 	spi_class->dev_uevent = my_uevent;
     
-	cdev_init(&spi_cdev, &spiregmap_fops);
-	spi_cdev.owner = THIS_MODULE;
+	cdev_init(&mystr->spi_cdev, &spiregmap_fops);
+	mystr->spi_cdev.owner = THIS_MODULE;
 	
 	/* Device number to use to add cdev to the core */
 	curr_dev = MKDEV(MAJOR(dev_num), MINOR(dev_num));
     
 	/* Now make the device live for the users to access */ 
-    	err = cdev_add(&spi_cdev, curr_dev, 1);
+    	err = cdev_add(&mystr->spi_cdev, curr_dev, 1);
 	if (err)
 	{
 		class_destroy(spi_class);
-		cdev_del(&spi_cdev);
+		cdev_del(&mystr->spi_cdev);
 		dev_err(dev, "Char device not added to the system");
 		return err;
 	}
@@ -146,6 +181,9 @@ static int spi_probe(struct spi_device *spi)
                CHAR_DEVICE_NAME);
 /*------------------------- Character driver related -------------------------*/
 	
+	/* Following step is only required because while removing the device
+	we need a reference to struct cdev which is embedded in our strcuture */
+	spi_set_drvdata(spi, mystr);
 	dev_err(dev, "Hello! SPI device probed ENDED");
 
 	return 0;
@@ -153,6 +191,13 @@ static int spi_probe(struct spi_device *spi)
 
 static int spi_remove(struct spi_device *spi)
 {
+	struct mystruct *mystr = spi_get_drvdata(spi);
+	if (mystr == NULL)
+	{
+		dev_err(&spi->dev, "mystruct not found\n");
+		return -ENODEV; /* No such device */
+	}
+	
 	dev_err(&spi->dev, "Remove procedure started for SPI");
 
 /*------------------------------ Regmap related ------------------------------*/
@@ -164,7 +209,7 @@ static int spi_remove(struct spi_device *spi)
 
 	class_destroy(spi_class);
 
-	cdev_del(&spi_cdev);
+	cdev_del(&mystr->spi_cdev);
 /*------------------------- Character driver related -------------------------*/
 
 	dev_err(&spi->dev, "good bye!");
@@ -174,23 +219,126 @@ static int spi_remove(struct spi_device *spi)
 
 static ssize_t myspi_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
-	temp = (char)buf[0];
-	pr_err("Writing to device = %c", buf[0]);
+	unsigned long status;
+	struct spi_transfer xtfr;
+	struct spi_message spiMsgStruct;
+	struct mystruct *mystr = filp->private_data;
+	struct device *dev = NULL;
+		
+	if (mystr == NULL)
+	{
+		pr_err("mystruct not found\n");
+		return -ENODEV; /* No such device */
+	}
 	
-	return count;
+	dev = &mystr->spiDevInStruct->dev;
+	
+	if (count > bufferSize)
+	{
+		count = bufferSize;
+	}
+	
+	status = copy_from_user(mystr->tx_buff, buf, count);
+	if (status)
+	{
+		dev_err(dev, "Problem in copying data to Kernel");
+		return -EFAULT;
+	}
+	
+	xtfr.tx_buf = mystr->tx_buff;
+	xtfr.len = count;
+	xtfr.rx_buf = NULL;
+	xtfr.cs_change = 1;
+	xtfr.speed_hz = 0;	/*Defualt speed will be taken from SPI device */
+	
+	spi_message_init(&spiMsgStruct);
+	spi_message_add_tail(&xtfr, &spiMsgStruct);
+	
+	status = spi_sync(mystr->spiDevInStruct, &spiMsgStruct);
+	if (status == 0)
+	{
+		status = spiMsgStruct.actual_length;
+		dev_err(dev, "Writing to device = %u", status);
+	}
+	else 
+	{
+		dev_err(dev, "There was a problem in writing = %u", status);
+	}
+	return status;
 }
 
 static ssize_t myspi_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {	
-	pr_err("Reading from device = %d", count);
+	unsigned long status;
+	struct spi_transfer xtfr;
+	struct spi_message spiMsgStruct;
+	struct device *dev = NULL;
+	struct mystruct *mystr = filp->private_data;
 	
-	if (copy_to_user(buf, &temp, 1))
+	if (mystr == NULL)
 	{
-		pr_err("Failure in copying to user");
-		return -EFAULT;
+		pr_err("mystruct not found\n");
+		return -ENODEV; /* No such device */
 	}
 	
-	return 1;
+	dev = &mystr->spiDevInStruct->dev;
+	
+	if(count > bufferSize)
+	{
+		count = bufferSize;
+	}
+	
+	xtfr.tx_buf = NULL;
+	xtfr.len = count;
+	xtfr.rx_buf = mystr->rx_buff;
+/*		xtfr.cs_change = 1; */
+	xtfr.speed_hz = 0;	/*Defualt speed will be taken from SPI device */
+	
+	spi_message_init(&spiMsgStruct);
+	spi_message_add_tail(&xtfr, &spiMsgStruct);
+	
+	status = spi_sync(mystr->spiDevInStruct, &spiMsgStruct);
+	if (status == 0)
+	{
+		status = spiMsgStruct.actual_length;
+		if (copy_to_user(buf, mystr->tx_buff, status))
+		{
+			dev_err(dev, "Failure in copying to user");
+			return -EFAULT;
+		}
+		dev_err(dev, "Reading from device = %d", status);
+	}
+	else
+	{
+		dev_err(dev, "There was a problem in reading = %d", status);
+	}
+	return count;
+}
+
+static int myspi_open(struct inode *inode, struct file *filp)
+{
+	struct mystruct *mystr = NULL;
+	
+	pr_err("Opening the device");
+	
+	mystr = container_of(inode->i_cdev, struct mystruct, spi_cdev);
+	if (mystr == NULL)
+	{
+		pr_err("Container_of did not found any valid data\n");
+		return -ENODEV; /* No such device */
+	}
+	
+	if (inode->i_cdev != &mystr->spi_cdev)
+	{
+        	pr_err("Device open: internal error\n");
+        	return -ENODEV; /* No such device */
+    	}
+	
+	filp->private_data = mystr;
+	
+	pr_err("Device Opening was successful");
+	
+	return 0;
 }
 
 static struct spi_driver mydrv = {
