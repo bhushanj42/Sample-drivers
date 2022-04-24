@@ -10,7 +10,7 @@ GuiBackEnd::GuiBackEnd(QObject *parent): QObject(parent)
 
         file = new QFile(CHAR_DEVICE_NAME);
         if (file->exists()){
-            if (file->open(QIODevice::ReadWrite | QIODevice::Unbuffered)){// | QIODevice::Text)){
+            if (file->open(QIODevice::ReadWrite | QIODevice::Unbuffered)){
                 stream = new QDataStream(file);
                 qDebug()<<"File opened successfully";
             }
@@ -32,17 +32,23 @@ void GuiBackEnd::writeToSPI(QString s)
     bool writeStatus = true;
     char data[16];
     int dataWritten;
+    static char count = 33;
 
-    data[0] = '1';
-    data[1] = '2';
-    data[2] = '3';
-    data[3] = '4';
-    data[4] = '5';
-    data[5] = '6';
-    data[6] = '7';
-    data[7] = '8';
+    data[0] = '0';//count;
+    data[1] = '0';//count + 1;
+    data[2] = '0';//count + 2;
+    data[3] = '0';//count + 3;
+    data[4] = '1';//count + 4;
+    data[5] = '1';//count + 5;
+    data[6] = '1';//count + 6;
+    data[7] = '2';//count + 7;
 
-    dataWritten = stream->writeRawData(data, 8);
+    count = count + 8;
+    if(count >= 119){
+        count = 33;
+    }
+
+    dataWritten = stream->writeRawData(data, 4);
     if(dataWritten == -1) {
         qDebug()<<"Data not written";
         writeStatus = false;
