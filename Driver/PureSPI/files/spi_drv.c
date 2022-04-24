@@ -22,7 +22,6 @@ struct mystruct {
 	struct mutex buf_lock;
 };
 static unsigned bufferSize = 8;	/* Bytes */
-
 /*---------------------------- SPI driver related ----------------------------*/
 #define ID_FOR_FOO_DEVICE  0
 
@@ -80,10 +79,10 @@ static int spi_probe(struct spi_device *spi)
 	mystr->spiDevInStruct = spi;
 	mutex_init(&mystr->buf_lock);
 /*---------------------------- SPI driver related ----------------------------*/
-	spi->mode = SPI_MODE_0;
-	spi->max_speed_hz = 122000;	/* 125 KHz */
+	spi->mode = SPI_MODE_0;/* | SPI_CS_HIGH; */
+	spi->max_speed_hz = 125000;	/* 125 KHz */
 	spi->bits_per_word = 8;
-	spi->cs_gpio = 1;
+	spi->cs_gpio = 0;
 	err = spi_setup(spi);
 	if(err < 0) {
 		dev_err(dev, "Problem in spi_setup");
@@ -161,10 +160,9 @@ static int spi_remove(struct spi_device *spi)
 static ssize_t myspi_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
 	unsigned long status;
-	struct spi_transfer xtfr;
-	struct spi_message spiMsgStruct;
 	struct mystruct *mystr = filp->private_data;
 	struct device *dev = NULL;
+	u8 i;
 
 	if (mystr == NULL) {
 		pr_err("mystruct not found\n");
@@ -180,38 +178,33 @@ static ssize_t myspi_write(struct file *filp, const char __user *buf, size_t cou
 	mutex_lock(&mystr->buf_lock);
 
 	status = copy_from_user(mystr->tx_buff, buf, count);
-
 	if (status) {
 		dev_err(dev, "Problem in copying data to Kernel");
 		return -EFAULT;
 	}
 	
-	xtfr.tx_buf = mystr->tx_buff;
-	xtfr.len = count;
-	xtfr.rx_buf = NULL;
-	
-	spi_message_init(&spiMsgStruct);
-	spi_message_add_tail(&xtfr, &spiMsgStruct);
-	
-	status = spi_sync(mystr->spiDevInStruct, &spiMsgStruct);
+	status = spi_write(mystr->spiDevInStruct, mystr->tx_buff, count);
 	if (status == 0) {
-		status = spiMsgStruct.actual_length;
-		dev_err(dev, "Writing to device = %lu", status);
+		status = count;
+		dev_err(dev, "Write Size = %u", count);
+		for (i = 0; i < count; i++) {
+			dev_err(dev, "%c", mystr->tx_buff[i]);
+		}
 	}
 	else {
 		dev_err(dev, "There was a problem in writing = %lu", status);
 	}
 	mutex_unlock(&mystr->buf_lock);
+	
 	return status;
 }
 
 static ssize_t myspi_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {	
 	unsigned long status;
-	struct spi_transfer xtfr;
-	struct spi_message spiMsgStruct;
 	struct device *dev = NULL;
 	struct mystruct *mystr = filp->private_data;
+	u8 i;
 	
 	if (mystr == NULL) {
 		pr_err("mystruct not found\n");
@@ -227,26 +220,22 @@ static ssize_t myspi_read(struct file *filp, char __user *buf, size_t count, lof
 	
 	mutex_lock(&mystr->buf_lock);
 	
-	xtfr.tx_buf = NULL;
-	xtfr.len = count;
-	xtfr.rx_buf = mystr->rx_buff;
-	
-	spi_message_init(&spiMsgStruct);
-	spi_message_add_tail(&xtfr, &spiMsgStruct);
-	
-	status = spi_sync(mystr->spiDevInStruct, &spiMsgStruct);
+	status = spi_read(mystr->spiDevInStruct, mystr->rx_buff, count);
 	if (status == 0) {
-		status = spiMsgStruct.actual_length;
-		if (copy_to_user(buf, mystr->rx_buff, status)) {
+		if (copy_to_user(buf, mystr->rx_buff, count)) {
 			dev_err(dev, "Failure in copying to user");
 			return -EFAULT;
 		}
-		dev_err(dev, "Reading from device = %lu", status);
+		dev_err(dev, "Read Size = %u", count);
+		for (i = 0; i < count; i++) {
+			dev_err(dev, "%u", mystr->rx_buff[i]);
+		}
 	}
 	else {
 		dev_err(dev, "There was a problem in reading = %lu", status);
 	}
 	mutex_unlock(&mystr->buf_lock);
+	
 	return count;
 }
 
