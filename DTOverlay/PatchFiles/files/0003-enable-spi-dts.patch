@@ -1,0 +1,13 @@
+diff --git a/cbcm283x.dtsi.orig b/bcm283x.dtsi
+index fa18607..581034e 100644
+--- a/arch/arm/boot/dts/bcm283x.dtsi
++++ b/arch/arm/boot/dts/bcm283x.dtsi
+@@ -407,7 +407,7 @@
+ 			dma-names = "tx", "rx";
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-			status = "disabled";
++			status = "okay";
+ 		};
+ 
+ 		i2c0: i2c@7e205000 {
